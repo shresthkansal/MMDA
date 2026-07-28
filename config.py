@@ -17,6 +17,10 @@ import torch
 RAW_DATA_ROOT = "/content/drive/MyDrive/Raw_Data"
 PROCESSED_DATA_ROOT = "/content/drive/MyDrive/Processed_Data"
 
+# Shared reference-snippet library used by Phase 1 (reference_library.py) -- not
+# per-take, one directory of per-step snippet folders for the reference take.
+ACTION_DICTIONARY_ROOT = os.path.join(PROCESSED_DATA_ROOT, "dataset/action_dictionary")
+
 TAKE_CONFIG = {
     2: {
         "front": ["0004SQ", "00056X"],
@@ -171,4 +175,15 @@ def get_take_paths(take_id: int) -> dict:
 
         # --- Transcript ---
         "transcript": os.path.join(proc_root, "Transcript.txt"),
+
+        # --- Phase 0 outputs (phase0.py) ---
+        "phases_config": os.path.join(proc_root, "phases_config.json"),
+        "anchor_embeddings": os.path.join(proc_root, "anchor_embeddings.npy"),
+        "anchor_index": os.path.join(proc_root, "anchor_index.json"),
+        "phase0_validation_log": os.path.join(proc_root, "phase0_validation.log"),
+
+        # --- Phase 1 outputs (reference_library.py) ---
+        "annotations_csv": os.path.join(proc_root, "annotations_master.csv"),
+        "reference_library_json": os.path.join(proc_root, "action_library.json"),
+        "reference_library_excel": os.path.join(proc_root, "action_library.xlsx"),
     }
