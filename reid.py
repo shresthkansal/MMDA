@@ -24,7 +24,6 @@ the one to actually use -- #1 is included for reference/comparison only.
 import cv2
 import numpy as np
 import pandas as pd
-from google.colab.patches import cv2_imshow
 from sklearn.metrics.pairwise import cosine_similarity
 
 
@@ -382,6 +381,8 @@ def render_phase_check_frames(video_path: str, csv_path: str, phases: dict) -> N
     Not part of the automated pipeline -- call manually from a Colab cell
     (uses cv2_imshow) if you want to eyeball a schedule before trusting it.
     """
+    from google.colab.patches import cv2_imshow
+
     cap = cv2.VideoCapture(video_path)
     df = pd.read_csv(csv_path)
 

@@ -16,8 +16,6 @@ import os
 
 import cv2
 import pandas as pd
-from google.colab.patches import cv2_imshow
-from IPython.display import clear_output
 
 COL_NAMES = [
     "Nose", "L_Eye", "R_Eye", "L_Ear", "R_Ear", "L_Shoulder", "R_Shoulder",
@@ -232,6 +230,9 @@ def create_preview_video(input_video_path, input_csv_path, output_video_path,
             prog = (current_frame - start_frame) / (end_frame - start_frame) * 100
             status = f"Rendering: {current_frame}/{end_frame} ({prog:.1f}%)"
             if display_in_colab:
+                from google.colab.patches import cv2_imshow
+                from IPython.display import clear_output
+
                 clear_output(wait=True)
                 print(status)
                 vis_frame = cv2.resize(frame, (int(orig_w * display_scale), int(orig_h * display_scale)))
