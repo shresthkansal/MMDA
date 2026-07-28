@@ -7,7 +7,6 @@ the most care/fidelity, preserving exact computation logic from the source
 notebook (idx 106-130), in original execution order:
 
     preprocess_medical_keypoints      (merge Front/Side/360 CSVs -> wide format)
-    construct_binary_step_columns     (annotate step intervals -- SEE WARNING BELOW)
     add_smoothed_posture_features     (spine angle, shoulder tilt -> Shape/Twist)
     add_strict_touch_features         (proximity-based touch detection)
     add_doctor_position_feature       (Head/Middle/Foot position relative to patient)
@@ -19,16 +18,12 @@ notebook (idx 106-130), in original execution order:
                                         pair in idx 129 which was part of an excluded
                                         interactive ipywidgets visualizer)
 
-*** IMPORTANT BUG FOUND, NOT SILENTLY FIXED ***
-`construct_binary_step_columns` ran without error and is what actually
-produced the existing Wide_Keypoints2.csv files on Drive, BUT its frame-to-
-step mapping loop was commented out in the source notebook. As shipped, it
-only *initializes* one binary column per step (all zeros) and never actually
-marks which frames belong to which step. This is ported faithfully (matching
-what actually ran and produced your existing data) with the dead loop
-preserved in a comment and a runtime warning added so it can't be missed.
-Re-enabling it is a real logic change, left for a deliberate decision rather
-than done silently here.
+The step-interval binary columns (formerly `construct_binary_step_columns`)
+were dropped per user decision: the source notebook's frame-to-step mapping
+loop was dead code (commented out), so the columns it produced were always
+all-zero in every take processed so far -- confirmed against the real
+Take_6_Wide_Keypoints2.csv reference during verification. Not needed going
+forward.
 """
 import os
 
@@ -87,57 +82,7 @@ def preprocess_medical_keypoints(csv_paths: dict) -> "pd.DataFrame | None":
 
 
 # ==========================================
-# 2. Binary step columns -- SEE MODULE WARNING, mapping loop is a documented no-op
-# ==========================================
-def construct_binary_step_columns(master_csv_path: str, annotations_csv_path: str, output_csv_path: str) -> None:
-    """WARNING: as ported from the source notebook, this only initializes one
-    binary column per step (all zeros) -- the frame-range mapping that should
-    set them to 1 was commented out in the original and is preserved as a
-    comment below, not executed. See module docstring."""
-    print("WARNING: construct_binary_step_columns' frame-to-step mapping is "
-          "disabled (ported as-is from source -- see features.py docstring). "
-          "Output binary step columns will all be 0.")
-
-    df_master = pd.read_csv(master_csv_path)
-    df_ann = pd.read_csv(annotations_csv_path)
-
-    df_master.columns = df_master.columns.str.strip().str.replace("\t", "")
-    df_ann.columns = df_ann.columns.str.strip().str.replace("\t", "")
-
-    print(f"Detected annotation columns: {list(df_ann.columns)}")
-
-    name_col = None
-    for possible_name in ["step_names", "step_name", "name", "step id"]:
-        if possible_name in df_ann.columns:
-            name_col = possible_name
-            break
-    if name_col is None:
-        raise ValueError(f"Could not find a name column. Available columns are: {list(df_ann.columns)}")
-
-    df_master["Frame"] = pd.to_numeric(df_master["Frame"], errors="coerce")
-    df_ann["start_frame"] = pd.to_numeric(df_ann["start_frame"], errors="coerce")
-    df_ann["end_frame"] = pd.to_numeric(df_ann["end_frame"], errors="coerce")
-
-    unique_steps = df_ann[name_col].astype(str).str.strip().unique()
-    for step in unique_steps:
-        df_master[step] = 0
-
-    # --- Original mapping logic (disabled in source, preserved verbatim) ---
-    # frames = df_master['Frame'].values
-    # for _, row in df_ann.iterrows():
-    #     s_frame = row['start_frame']
-    #     e_frame = row['end_frame']
-    #     step_col = str(row[name_col]).strip()
-    #     if pd.notna(s_frame) and pd.notna(e_frame):
-    #         mask = (frames >= s_frame) & (frames <= e_frame)
-    #         df_master.loc[mask, step_col] = 1
-
-    df_master.to_csv(output_csv_path, index=False)
-    print(f"Dataset saved to {output_csv_path}")
-
-
-# ==========================================
-# 3. Posture / touch / doctor-position features
+# 2. Posture / touch / doctor-position features
 # ==========================================
 def calculate_posture_angles(row) -> pd.Series:
     dy_spine = ((row.get("Side_Patient_L_Hip_Y", 0) + row.get("Side_Patient_R_Hip_Y", 0)) / 2) - \
@@ -307,7 +252,7 @@ def verify_position_feature(frame_num: int, df: pd.DataFrame, video_paths: dict)
 
 
 # ==========================================
-# 4. Audio Umbrella: Gemini transcript classification merged in
+# 3. Audio Umbrella: Gemini transcript classification merged in
 # ==========================================
 def time_to_frames(time_str: str, fps: int = 24) -> int:
     time_str = time_str.strip("[]")
@@ -379,7 +324,7 @@ def merge_llm_features(csv_path: str, transcript_path: str, output_path: str,
 
 
 # ==========================================
-# 5. Hand velocity + anatomical zone distance features
+# 4. Hand velocity + anatomical zone distance features
 # ==========================================
 def add_velocity_features(file_path: str) -> None:
     df = pd.read_csv(file_path)
@@ -448,7 +393,7 @@ def add_anatomical_zones(file_path: str) -> None:
 
 
 # ==========================================
-# 6. Continuous geometric zone projection (idx 130 -- latest version, supersedes idx 129)
+# 5. Continuous geometric zone projection (idx 130 -- latest version, supersedes idx 129)
 # ==========================================
 def get_continuous_side_vertical(wx, wy, N, S, H, torso_length):
     if pd.isna(wx) or pd.isna(wy):

@@ -14,8 +14,6 @@ their value is still under review (known-weak zone classification;
 grading.py functionally overlaps with the Data_Prep Qwen approach). Call
 them directly if/when needed.
 """
-import pandas as pd
-
 from . import config, features, pose, reid, render
 
 # `sync.run_sync_calculator` is available for computing fresh offsets for a
@@ -89,10 +87,6 @@ def run_feature_pipeline(take_id: int, gemini_api_key: str = None) -> None:
     """Features stage: assumes Front/Side/360 have all been through render +
     pose + the human-verified ReID step already (labeled CSVs exist).
     Runs the full confirmed-good chain from features.py in order.
-
-    `construct_binary_step_columns` is called for parity with the original
-    notebook but its mapping loop is a documented no-op (see features.py) --
-    output binary step columns will be all-zero until that's addressed.
     """
     p = config.get_take_paths(take_id)
 
@@ -101,14 +95,7 @@ def run_feature_pipeline(take_id: int, gemini_api_key: str = None) -> None:
         "Side": p["pose_side_labeled_csv"],
         "360": p["pose_360_labeled_csv"],
     }
-    wide_df = features.preprocess_medical_keypoints(csv_paths)
-    raw_wide_path = p["wide_keypoints_csv"].replace(".csv", "_raw.csv")
-    wide_df.to_csv(raw_wide_path, index=False)
-
-    annotations_path = f"{p['processed_folder']}/annotations_master.csv"
-    features.construct_binary_step_columns(raw_wide_path, annotations_path, p["wide_keypoints_csv"])
-
-    master_df = pd.read_csv(p["wide_keypoints_csv"])
+    master_df = features.preprocess_medical_keypoints(csv_paths)
     master_df = features.add_smoothed_posture_features(master_df, window_size=15)
     master_df = features.add_strict_touch_features(master_df, threshold=75)
     master_df = features.add_doctor_position_feature(master_df)

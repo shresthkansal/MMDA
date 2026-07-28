@@ -167,7 +167,7 @@ def get_take_paths(take_id: int) -> dict:
         "pose_360_labeled_csv": os.path.join(reid_root, "360_Final.csv"),
 
         # --- Wide keypoints dataset ---
-        "wide_keypoints_csv": os.path.join(reid_root, f"Take_{take_id}_Wide_Keypoints2.csv"),
+        "wide_keypoints_csv": os.path.join(proc_root, f"Take_{take_id}_Wide_Keypoints2.csv"),
 
         # --- Transcript ---
         "transcript": os.path.join(proc_root, "Transcript.txt"),
