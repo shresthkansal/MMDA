@@ -186,4 +186,8 @@ def get_take_paths(take_id: int) -> dict:
         "annotations_csv": os.path.join(proc_root, "annotations_master.csv"),
         "reference_library_json": os.path.join(proc_root, "action_library.json"),
         "reference_library_excel": os.path.join(proc_root, "action_library.xlsx"),
+
+        # --- Stage 01 segmentation outputs (segmentation.py) ---
+        "segmentation_log": os.path.join(proc_root, "segmentation.log"),
+        "segments_json": os.path.join(proc_root, "segments.json"),
     }
