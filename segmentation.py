@@ -98,13 +98,30 @@ from . import config, phase0
 # ==========================================
 # Tunable hyperparameters (start wide -- see module docstring)
 # ==========================================
-DEFAULT_SIGMA_SEC = phase0.PIPELINE_CONFIG["boundary_slop_sec"] / 3     # anchor bump width
+# Anchor bump width. Measured on Take 3 (2026-09-01), NOT a guess: this was
+# previously PIPELINE_CONFIG["boundary_slop_sec"]/3 = 10.0s, but boundary_slop
+# is an evaluation tolerance and was never meant as an emission width. 10s is
+# far wider than the steps it must separate (thrill sites are ~1-2s). Dropping
+# to 2.0 doubled F1@50 (6.2 -> 13.0) and lifted frame accuracy 33.7 -> 46.9.
+# Optimum is not pinned down: only {1,2,4,10} were swept, and 1.0 scored higher
+# on IoU while 2.0 won on F1/frame-accuracy. Sweep further before trusting it.
+DEFAULT_SIGMA_SEC = 2.0
 DEFAULT_FORWARD_RATE = 0.15    # soft transition penalty, per order-step skipped ahead
 DEFAULT_BACKWARD_RATE = 0.6    # soft transition penalty, per order-step resumed backward
 DEFAULT_DURATION_SHRINK = 0.4  # d_min = observed_duration * shrink
 DEFAULT_DURATION_GROW = 2.5    # d_max = observed_duration * grow
 DEFAULT_DURATION_FALLBACK = (0.001, 0.25)  # used for steps missing from the reference annotations
-DEFAULT_ZONE_WEIGHT = 1.0      # relative weight of zone-match emission vs. transcript-anchor emission
+# Relative weight of zone-match emission vs. transcript-anchor emission.
+# DEFAULTS TO 0.0 = the zone signal is OFF, because it measurably HURTS.
+# Ablated on real Take 3 (2026-09-01): at every sigma tested, zone_weight 0.0
+# beat 1.0 beat 3.0 on F1 and frame accuracy -- monotonic, not noise. At
+# sigma=2.0: F1@50 13.0 (off) vs 8.5 (1.0) vs 6.6 (3.0). STEP_ZONE_HINTS is
+# hand-authored anatomical guesswork and does not survive contact with real
+# data. The code path is kept, not deleted, so the mapping can be REBUILT from
+# measured L_Combined_Zone/R_Combined_Zone values and re-ablated -- but do not
+# simply tune this value up; the mapping itself is what's wrong.
+# NB: IoU alone mildly *preferred* the zone signal. Judge it on F1/edit.
+DEFAULT_ZONE_WEIGHT = 0.0
 
 NEG_INF = -1e18
 
@@ -906,9 +923,20 @@ def run_segmentation(
     matches = match_anchors_to_transcript(anchor_vectors, anchor_index, utterances, backend)
     logger.info(f"  {len(matches)}/{len(anchor_index)} step-anchor phrases matched above sim floor")
 
-    transcript_emission = build_emission_matrix(meta_states, matches, total_frames, sigma_sec=sigma_sec)
-    zone_emission = build_zone_emission(meta_states, wide_df)
-    log_emission = emission_log_probs(transcript_emission + zone_weight * zone_emission)
+    raw_emission = build_emission_matrix(meta_states, matches, total_frames, sigma_sec=sigma_sec)
+    if zone_weight:
+        # Off by default -- see DEFAULT_ZONE_WEIGHT; skipped entirely rather
+        # than multiplied by zero so the pose scan isn't paid for when unused.
+        raw_emission = raw_emission + zone_weight * build_zone_emission(meta_states, wide_df)
+    logger.info(f"  Emission: transcript anchors (sigma={sigma_sec}s)"
+                + (f" + pose zones (weight={zone_weight})" if zone_weight else "; zone signal OFF"))
+    n_flat = int((raw_emission.max(axis=0) <= 0).sum())
+    if n_flat:
+        logger.warning(
+            f"  {n_flat}/{len(meta_states)} meta-states have NO emission evidence at all; "
+            f"whether they appear in the output is decided by tie-breaking, not by data."
+        )
+    log_emission = emission_log_probs(raw_emission)
 
     ref_take = take_id if duration_reference_take_id is None else duration_reference_take_id
     if ref_take == take_id:
