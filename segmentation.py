@@ -373,6 +373,36 @@ def emission_log_probs(raw_emission: np.ndarray) -> np.ndarray:
 # ==========================================
 # Duration bounds
 # ==========================================
+def read_annotations(annotations_csv_path: str) -> "pd.DataFrame":
+    """Reads a ground-truth annotations CSV and guarantees a `step_names`
+    column of full step ids (e.g. `step_25_1_Thrill_Apex`).
+
+    Two schemas for the same data exist on Drive and both are in active use,
+    so this normalises rather than picking a winner:
+      - `step_names` holding full step ids  (`manual_annotations_take{N}.csv`)
+      - `step_id` + `name` holding the parts (`annotations_master.csv`, which
+        is what config's `annotations_csv` points at, and what
+        `reference_library.py` reads)
+    The reconstruction rule is copied from `reference_library.py`'s
+    `f"step_{row['step_id']}_{row['name']}"` so both modules agree; verified
+    on Take 3 as an exact 57/57 match with identical timings between the two
+    files. Without this, decoding off `annotations_master.csv` died with
+    `KeyError: 'step_names'`."""
+    df = pd.read_csv(annotations_csv_path)
+    if "step_names" in df.columns:
+        return df
+    if "step_id" in df.columns and "name" in df.columns:
+        df = df.copy()
+        df["step_names"] = [
+            f"step_{r['step_id']}_{r['name']}" for _, r in df.iterrows()
+        ]
+        return df
+    raise KeyError(
+        f"{annotations_csv_path} has neither a 'step_names' column nor the "
+        f"'step_id'+'name' pair needed to build one; columns are {list(df.columns)}"
+    )
+
+
 def estimate_duration_bounds(
     annotations_csv_path: str,
     meta_states: List[MetaState],
@@ -385,7 +415,7 @@ def estimate_duration_bounds(
     take's real durations and widened by shrink/grow. Tunable, not fit to a
     corpus -- see module docstring re: only 1-2 annotated takes existing.
     Steps absent from the CSV fall back to default_frac."""
-    df = pd.read_csv(annotations_csv_path)
+    df = read_annotations(annotations_csv_path)
     step_durations: Dict[str, List[float]] = {}
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
@@ -561,7 +591,7 @@ def gt_frame_multilabels(annotations_csv_path: str, total_frames: int, fps: floa
     rows (which already list simultaneous steps as separate rows sharing a
     timestamp) -- unlike gt_frame_labels() below, this allows genuine
     multi-membership per frame rather than collapsing to one meta-label."""
-    df = pd.read_csv(annotations_csv_path)
+    df = read_annotations(annotations_csv_path)
     labels: List[Set[str]] = [set() for _ in range(total_frames)]
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
@@ -622,7 +652,7 @@ def segments_to_intervals(segments: List[Segment]) -> Dict[str, List[Tuple[float
 
 
 def load_ground_truth_intervals(annotations_csv_path: str) -> Dict[str, List[Tuple[float, float]]]:
-    df = pd.read_csv(annotations_csv_path)
+    df = read_annotations(annotations_csv_path)
     out: Dict[str, List[Tuple[float, float]]] = {}
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
@@ -758,7 +788,7 @@ def gt_frame_labels(
     comparison. Co-located groups collapse to one label here so
     single-label frame accuracy doesn't penalize the decoder for not
     picking which of several simultaneous steps is 'the' frame label."""
-    df = pd.read_csv(annotations_csv_path)
+    df = read_annotations(annotations_csv_path)
     labels = ["__none__"] * total_frames
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
