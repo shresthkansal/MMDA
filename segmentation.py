@@ -406,18 +406,40 @@ def read_annotations(annotations_csv_path: str) -> "pd.DataFrame":
     files. Without this, decoding off `annotations_master.csv` died with
     `KeyError: 'step_names'`."""
     df = pd.read_csv(annotations_csv_path)
-    if "step_names" in df.columns:
-        return df
-    if "step_id" in df.columns and "name" in df.columns:
+    if "step_names" not in df.columns:
+        if not ("step_id" in df.columns and "name" in df.columns):
+            raise KeyError(
+                f"{annotations_csv_path} has neither a 'step_names' column nor the "
+                f"'step_id'+'name' pair needed to build one; columns are {list(df.columns)}"
+            )
         df = df.copy()
-        df["step_names"] = [
-            f"step_{r['step_id']}_{r['name']}" for _, r in df.iterrows()
-        ]
-        return df
-    raise KeyError(
-        f"{annotations_csv_path} has neither a 'step_names' column nor the "
-        f"'step_id'+'name' pair needed to build one; columns are {list(df.columns)}"
-    )
+        df["step_names"] = [f"step_{r['step_id']}_{r['name']}" for _, r in df.iterrows()]
+    else:
+        df = df.copy()
+
+    # A blank start/end means the step was NOT PERFORMED. That is a real,
+    # deliberate case: Take 2 is a flawed performance and has 4 such rows
+    # (step_10_2, plus the whole 27_1/28_1/29_1 explain-triad, annotated "no
+    # explaination done"). Coerce to NaN so timing consumers can drop them via
+    # performed_rows(); before this, those blanks raised "cannot convert float
+    # NaN to integer" from deep inside the metrics. The rows are KEPT here
+    # rather than dropped, because their notes are grading signal.
+    for col in ("start_time", "end_time"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def performed_rows(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Rows for steps that actually happened (real start AND end times).
+
+    A step that was not performed contributes no ground-truth interval, which
+    is the semantically right thing: a decoder that predicts a span for it is
+    correctly charged a false positive, and one that predicts nothing is
+    correctly unpenalised. Every timing/metric consumer filters through this;
+    grading-oriented callers should use read_annotations() directly so they
+    still see the not-performed rows and their notes."""
+    return df[df["start_time"].notna() & df["end_time"].notna()]
 
 
 def estimate_duration_bounds(
@@ -432,7 +454,7 @@ def estimate_duration_bounds(
     take's real durations and widened by shrink/grow. Tunable, not fit to a
     corpus -- see module docstring re: only 1-2 annotated takes existing.
     Steps absent from the CSV fall back to default_frac."""
-    df = read_annotations(annotations_csv_path)
+    df = performed_rows(read_annotations(annotations_csv_path))
     step_durations: Dict[str, List[float]] = {}
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
@@ -608,7 +630,7 @@ def gt_frame_multilabels(annotations_csv_path: str, total_frames: int, fps: floa
     rows (which already list simultaneous steps as separate rows sharing a
     timestamp) -- unlike gt_frame_labels() below, this allows genuine
     multi-membership per frame rather than collapsing to one meta-label."""
-    df = read_annotations(annotations_csv_path)
+    df = performed_rows(read_annotations(annotations_csv_path))
     labels: List[Set[str]] = [set() for _ in range(total_frames)]
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
@@ -669,7 +691,7 @@ def segments_to_intervals(segments: List[Segment]) -> Dict[str, List[Tuple[float
 
 
 def load_ground_truth_intervals(annotations_csv_path: str) -> Dict[str, List[Tuple[float, float]]]:
-    df = read_annotations(annotations_csv_path)
+    df = performed_rows(read_annotations(annotations_csv_path))
     out: Dict[str, List[Tuple[float, float]]] = {}
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
@@ -805,7 +827,7 @@ def gt_frame_labels(
     comparison. Co-located groups collapse to one label here so
     single-label frame accuracy doesn't penalize the decoder for not
     picking which of several simultaneous steps is 'the' frame label."""
-    df = read_annotations(annotations_csv_path)
+    df = performed_rows(read_annotations(annotations_csv_path))
     labels = ["__none__"] * total_frames
     for _, row in df.iterrows():
         step = str(row["step_names"]).strip()
