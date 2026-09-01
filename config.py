@@ -136,6 +136,15 @@ def resolve_media_path(raw_folder: str, name: str, fallback_ext: str = ".MXF") -
 # ==========================================
 # 3. MASTER PATH BUILDER
 # ==========================================
+def _first_existing(*candidates: str) -> str:
+    """First path that exists, else the first candidate (so callers still get
+    a sensible path to create or to name in an error message)."""
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]
+
+
 def get_take_paths(take_id: int) -> dict:
     """Generates all file paths for a given Take ID, creating directories as needed."""
     raw_root = os.path.join(RAW_DATA_ROOT, f"Take_{take_id}")
@@ -183,11 +192,24 @@ def get_take_paths(take_id: int) -> dict:
         "phase0_validation_log": os.path.join(proc_root, "phase0_validation.log"),
 
         # --- Phase 1 outputs (reference_library.py) ---
-        "annotations_csv": os.path.join(proc_root, "annotations_master.csv"),
+        # Ground-truth annotations are not named consistently across takes:
+        # Take 3 has annotations_master.csv, Take 2 only has
+        # manual_annotations_take2.csv. Resolve to whichever exists (the
+        # master name wins if both do, as on Take 3). The two files also use
+        # different column schemas -- segmentation.read_annotations()
+        # normalises that, see its docstring.
+        "annotations_csv": _first_existing(
+            os.path.join(proc_root, "annotations_master.csv"),
+            os.path.join(proc_root, f"manual_annotations_take{take_id}.csv"),
+        ),
         "reference_library_json": os.path.join(proc_root, "action_library.json"),
         "reference_library_excel": os.path.join(proc_root, "action_library.xlsx"),
 
         # --- Stage 01 segmentation outputs (segmentation.py) ---
+        # NB: deliberately NOT "segments.json". Take_2/segments.json already
+        # holds unrelated prior work (6 umbrella-level U1-U6 spans with VLM
+        # evidence text, from the Phase 2 / cvs_pipeline2 line), which this
+        # module would otherwise silently overwrite on its first run.
         "segmentation_log": os.path.join(proc_root, "segmentation.log"),
-        "segments_json": os.path.join(proc_root, "segments.json"),
+        "segments_json": os.path.join(proc_root, "stage01_segments.json"),
     }
