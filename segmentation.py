@@ -98,14 +98,20 @@ from . import config, phase0
 # ==========================================
 # Tunable hyperparameters (start wide -- see module docstring)
 # ==========================================
-# Anchor bump width. Measured on Take 3 (2026-09-01), NOT a guess: this was
-# previously PIPELINE_CONFIG["boundary_slop_sec"]/3 = 10.0s, but boundary_slop
-# is an evaluation tolerance and was never meant as an emission width. 10s is
-# far wider than the steps it must separate (thrill sites are ~1-2s). Dropping
-# to 2.0 doubled F1@50 (6.2 -> 13.0) and lifted frame accuracy 33.7 -> 46.9.
-# Optimum is not pinned down: only {1,2,4,10} were swept, and 1.0 scored higher
-# on IoU while 2.0 won on F1/frame-accuracy. Sweep further before trusting it.
-DEFAULT_SIGMA_SEC = 2.0
+# Anchor bump width. Measured, not a guess. Originally
+# PIPELINE_CONFIG["boundary_slop_sec"]/3 = 10.0s, but boundary_slop is an
+# evaluation tolerance and was never meant as an emission width; 10s is far
+# wider than the ~1-2s steps it must separate, and is clearly worst on BOTH
+# takes. Briefly set to 2.0 on 2026-09-01 from a Take-3-only sweep -- that
+# comparison was CONFOUNDED (the sigma=1.0 arm had the zone signal on).
+# Re-swept 2026-09-02 with zone off on both takes, mean over Take 2 + Take 3:
+#     sigma 1.0 -> IoU 0.200  F1@50 10.4  frameAcc 41.2   <- best
+#     sigma 2.0 -> IoU 0.180  F1@50  9.6  frameAcc 39.6
+#     sigma 3.0 -> IoU 0.184  F1@50  9.8  frameAcc 41.7
+#     sigma 4.0 -> IoU 0.165  F1@50  9.5  frameAcc 39.2
+# 1.0 and 2.0 are a wash on Take 3 alone, but 1.0 is much better on Take 2
+# (IoU 0.182 vs 0.145), so 1.0 wins overall. Still only n=2 takes.
+DEFAULT_SIGMA_SEC = 1.0
 DEFAULT_FORWARD_RATE = 0.15    # soft transition penalty, per order-step skipped ahead
 DEFAULT_BACKWARD_RATE = 0.6    # soft transition penalty, per order-step resumed backward
 DEFAULT_DURATION_SHRINK = 0.4  # d_min = observed_duration * shrink
