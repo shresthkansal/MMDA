@@ -128,6 +128,30 @@ DEFAULT_DURATION_FALLBACK = (0.001, 0.25)  # used for steps missing from the ref
 # simply tune this value up; the mapping itself is what's wrong.
 # NB: IoU alone mildly *preferred* the zone signal. Judge it on F1/edit.
 DEFAULT_ZONE_WEIGHT = 0.0
+# Weight for the MEASURED zone signal (fit_zone_pmi / build_measured_zone_emission).
+# Different mechanism from DEFAULT_ZONE_WEIGHT above: that one weights the
+# hand-authored STEP_ZONE_HINTS mapping, which is dead. This one weights a
+# p(zone|step) table LEARNED from an annotated take, and it is the single
+# largest accuracy gain this decoder has had. Cross-fitted on Colab
+# 2026-09-08 (each take decoded using PMI fitted on the OTHER take, so both
+# arms are honestly held out), mean over Take 2 + Take 3:
+#     weight 0.000 -> IoU 0.219  F1@50 11.1  frameAcc 44.1  edit 27.3  (= off)
+#     weight 0.025 -> IoU 0.349  F1@50 22.0  frameAcc 50.8  edit 31.0  <- best
+#     weight 0.050 -> IoU 0.350  F1@50 22.2  frameAcc 49.9  edit 27.8
+#     weight 0.100 -> IoU 0.293  F1@50 17.6  frameAcc 39.6  edit 18.2
+#     weight 0.250 -> IoU 0.269  F1@50 15.0  frameAcc 35.4  edit 13.6
+# 0.025 wins on all four metrics and beats "off" on both takes individually,
+# and the optimum is stable across takes (0.025 best on Take 3, 0.05 on Take
+# 2). The falloff above ~0.075 is steep and shows as over-segmentation, so
+# treat this as a small correction to the transcript signal, not a co-equal
+# one. It is OFF unless run_segmentation() is given
+# zone_pmi_reference_take_id -- fitting needs a take with BOTH per-frame
+# annotations and zone columns, and only Takes 2 and 3 have those.
+# CAVEAT, do not lose this: both takes share one doctor, patient, room and
+# camera rig, so transfer between them flatters the method. Zone tokens are
+# camera-geometry-dependent. Re-verify before trusting it on a take filmed
+# differently.
+DEFAULT_ZONE_PMI_WEIGHT = 0.025
 # How many transcript utterances one anchor phrase may match. >1 would let the
 # decoder, rather than an argmax outside it, resolve verbatim-repeated
 # instructions (see match_anchors_to_transcript) -- "are you comfortable?" is
@@ -403,6 +427,73 @@ def build_zone_emission(
 
     return raw
 
+
+
+# ==========================================
+# Measured zone emission (learned p(zone | step), supersedes STEP_ZONE_HINTS)
+# ==========================================
+def zone_tokens(wide_keypoints_df: "pd.DataFrame") -> np.ndarray:
+    """Per-frame joint zone token, "<L_Combined_Zone>|<R_Combined_Zone>".
+
+    Joint rather than two independent signals because the hands are strongly
+    dependent -- what distinguishes e.g. timing the carotid pulse while
+    auscultating (28_2) is precisely that one hand is at the neck WHILE the
+    other is on the chest. Either hand alone loses that."""
+    left = wide_keypoints_df["L_Combined_Zone"].fillna("N/A").astype(str)
+    right = wide_keypoints_df["R_Combined_Zone"].fillna("N/A").astype(str)
+    return (left + "|" + right).values
+
+
+def fit_zone_pmi(
+    annotations_csv_path: str,
+    wide_keypoints_df: "pd.DataFrame",
+    meta_states: List[MetaState],
+    fps: float = phase0.FPS,
+) -> Tuple[np.ndarray, Dict[str, int]]:
+    """Learns p(zone_token | meta_state) from an annotated take and returns
+    ((M, V) pointwise-mutual-information matrix, token->column index).
+
+    PMI -- log[ p(token|state) / p(token) ] -- not raw likelihood, because the
+    doctor stands on one side for most of the exam, so a handful of zone
+    tokens dominate globally; raw likelihood would just favour whichever state
+    is longest. PMI scores how much MORE a token occurs during a state than at
+    baseline, which is the discriminative question. Laplace-smoothed, so a
+    state that never saw a token gets a finite negative score rather than
+    -inf.
+
+    THIS SUPERSEDES STEP_ZONE_HINTS, which was hand-authored anatomical
+    guesswork and lost every ablation it entered. The difference is that this
+    is measured. See DEFAULT_ZONE_PMI_WEIGHT for the numbers."""
+    tokens = zone_tokens(wide_keypoints_df)
+    total_frames = len(tokens)
+    gt = gt_frame_labels(annotations_csv_path, meta_states, total_frames, fps)
+    label_index = {m.label: i for i, m in enumerate(meta_states)}
+
+    vocab = {tok: i for i, tok in enumerate(sorted(set(tokens)))}
+    counts = np.ones((len(meta_states), len(vocab)), dtype=np.float64)   # Laplace prior
+    for token, label in zip(tokens, gt):
+        m_idx = label_index.get(label)
+        if m_idx is not None:
+            counts[m_idx, vocab[token]] += 1.0
+
+    p_token_given_state = counts / counts.sum(axis=1, keepdims=True)
+    marginal = counts.sum(axis=0)
+    marginal = marginal / marginal.sum()
+    return np.log(p_token_given_state / marginal[None, :]), vocab
+
+
+def build_measured_zone_emission(
+    wide_keypoints_df: "pd.DataFrame",
+    pmi: np.ndarray,
+    vocab: Dict[str, int],
+) -> np.ndarray:
+    """(T, M) raw emission from a fitted PMI table. Tokens unseen during
+    fitting score 0 for every state -- i.e. they contribute nothing rather
+    than guessing, leaving the transcript anchors and duration bounds to
+    decide those frames."""
+    tokens = zone_tokens(wide_keypoints_df)
+    neutral = np.zeros(pmi.shape[0], dtype=np.float64)
+    return np.vstack([pmi[:, vocab[t]] if t in vocab else neutral for t in tokens])
 
 # ==========================================
 # Emission matrix
@@ -980,6 +1071,8 @@ def run_segmentation(
     shrink: float = DEFAULT_DURATION_SHRINK,
     grow: float = DEFAULT_DURATION_GROW,
     zone_weight: float = DEFAULT_ZONE_WEIGHT,
+    zone_pmi_reference_take_id: Optional[int] = None,
+    zone_pmi_weight: float = DEFAULT_ZONE_PMI_WEIGHT,
     max_anchor_candidates: int = DEFAULT_MAX_ANCHOR_CANDIDATES,
     evaluate: bool = True,
 ) -> Tuple[List[Segment], Optional[dict]]:
@@ -1018,6 +1111,23 @@ def run_segmentation(
         # Off by default -- see DEFAULT_ZONE_WEIGHT; skipped entirely rather
         # than multiplied by zero so the pose scan isn't paid for when unused.
         raw_emission = raw_emission + zone_weight * build_zone_emission(meta_states, wide_df)
+
+    if zone_pmi_reference_take_id is not None and zone_pmi_weight:
+        # Measured p(zone|step), fitted on a DIFFERENT annotated take -- see
+        # DEFAULT_ZONE_PMI_WEIGHT. Fitting on the take being decoded would be
+        # circular and inflates every metric roughly twofold, so warn loudly.
+        ref = config.get_take_paths(zone_pmi_reference_take_id)
+        ref_df = (wide_df if zone_pmi_reference_take_id == take_id
+                  else pd.read_csv(ref["wide_keypoints_csv"]))
+        pmi, vocab = fit_zone_pmi(ref["annotations_csv"], ref_df, meta_states)
+        raw_emission = raw_emission + zone_pmi_weight * build_measured_zone_emission(
+            wide_df, pmi, vocab)
+        logger.info(f"  Measured zone PMI: fitted on Take {zone_pmi_reference_take_id} "
+                    f"({pmi.shape[1]} zone tokens), weight={zone_pmi_weight}")
+        if zone_pmi_reference_take_id == take_id:
+            logger.warning("  Zone PMI fitted from the SAME take being decoded -- circular "
+                           "(fit-then-eval). Metrics from this run are an upper bound, not a "
+                           "result. Point zone_pmi_reference_take_id at a different take.")
     logger.info(f"  Emission: transcript anchors (sigma={sigma_sec}s)"
                 + (f" + pose zones (weight={zone_weight})" if zone_weight else "; zone signal OFF"))
     n_flat = int((raw_emission.max(axis=0) <= 0).sum())
