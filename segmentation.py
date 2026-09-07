@@ -1128,8 +1128,13 @@ def run_segmentation(
             logger.warning("  Zone PMI fitted from the SAME take being decoded -- circular "
                            "(fit-then-eval). Metrics from this run are an upper bound, not a "
                            "result. Point zone_pmi_reference_take_id at a different take.")
-    logger.info(f"  Emission: transcript anchors (sigma={sigma_sec}s)"
-                + (f" + pose zones (weight={zone_weight})" if zone_weight else "; zone signal OFF"))
+    signals = [f"transcript anchors (sigma={sigma_sec}s)"]
+    if zone_weight:
+        signals.append(f"STEP_ZONE_HINTS zones (weight={zone_weight})")
+    if zone_pmi_reference_take_id is not None and zone_pmi_weight:
+        signals.append(f"measured zone PMI (weight={zone_pmi_weight})")
+    logger.info("  Emission: " + " + ".join(signals)
+                + ("" if len(signals) > 1 else "; no pose signal"))
     n_flat = int((raw_emission.max(axis=0) <= 0).sum())
     if n_flat:
         logger.warning(
