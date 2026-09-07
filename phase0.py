@@ -172,6 +172,24 @@ UMBRELLA_ANCHORS: List[UmbrellaAnchor] = [
     UmbrellaAnchor("U6", ["end of my examination", "come to the end"], confidence=1.0),
 ]
 
+# --- STEP_ANCHORS ---
+# lead_lag_sec: hand-authored per-anchor offsets, KEPT despite an audit that
+# initially argued for removing them. Recording both halves, because the
+# disagreement is the useful part (2026-09-08):
+#   * A signed-error audit over both real takes (104 unambiguous
+#     phrase/boundary pairs) says these offsets do not generalise: the value
+#     measured on Take 3 vs Take 2 correlates at -0.01 with a mean absolute
+#     disagreement of 14.2s, and mean absolute boundary error is 10.73s with
+#     them vs 9.97s with all of them at 0.0.
+#   * But zeroing them makes the DECODER worse, not better, at every sigma
+#     tried (0.5/1/2/4) -- Take 2 mean IoU 0.204 -> 0.143 and F1@50
+#     13.1 -> 6.5 at sigma=1.0. Take 3 improves slightly; Take 2 loses much
+#     more than Take 3 gains.
+# The lesson is that anchor-to-boundary MAE is NOT the decoder's objective:
+# it weights all anchors equally, while the decode depends disproportionately
+# on the few anchors that pin down long stretches. Do not re-tune these
+# against MAE. Any future change here must be justified end-to-end, on both
+# takes, on F1/frame-accuracy as well as IoU.
 STEP_ANCHORS: List[StepAnchor] = [
     StepAnchor("step_1_Greet_Patient", ["how do i address", "hi ", "hello"], "start_instruction", -0.5, 0.8),
     StepAnchor("step_2_Obtain_Consent", ["cardiovascular exam", "okay to proceed", "would that be okay", "shall we proceed"], "start_instruction", 0.0),
@@ -179,7 +197,7 @@ STEP_ANCHORS: List[StepAnchor] = [
     StepAnchor("step_6_Patient_Comfort", ["are you comfortable", "comfortable?"], "start_instruction", 0.0),
     StepAnchor("step_7_Position_45_Degrees", ["45 degrees", "forty five degrees"], "start_instruction", 0.0),
     StepAnchor("step_5_Hand_Hygiene", ["clean my hands", "hand rub", "sanitise", "sanitize"], "start_instruction", 0.3),
-    StepAnchor("step_8_Expose_Chest_Legs", ["expose your chest", "remove your shirt"], "start_instruction", 0.2),
+    StepAnchor("step_8_Expose_Chest_Legs", ["just expose your chest", "actually expose", "remove your shirt"], "start_instruction", 0.2),
     StepAnchor("step_9_General_Inspection", ["general inspection", "comfortable at rest"], "start_instruction", 0.6),
     StepAnchor("step_10_1_Inspect_Syndromic_General", ["marfan", "turner", "syndromic", "acromegaly", "trisomy"], "start_instruction", 0.0),
     StepAnchor("step_11_Inspect_Anterior_Chest", ["raise your arms", "near inspection", "scars on the chest", "pacemaker", "apex beat"], "start_instruction", 3.5),
@@ -190,7 +208,7 @@ STEP_ANCHORS: List[StepAnchor] = [
     StepAnchor("step_15_Palpate_Radial_Pulse", ["heart rate is", "pulse rate is", "respiratory rate is"], "end_finding", 5.0),
     StepAnchor("step_17_Radio_Femoral_Delay", ["omit", "radio-femoral", "radio femoral"], "omission", 0.0),
     StepAnchor("step_14_Inspect_Forearms", ["forearms", "antecubital", "needle marks", "tendon xanthoma"], "start_instruction", 8.0),
-    StepAnchor("step_18_Collapsing_Pulse", ["pain in your shoulder", "pain in shoulder", "going to lift your", "raise your arm"], "start_instruction", -0.5, 1.0),
+    StepAnchor("step_18_Collapsing_Pulse", ["pain in your shoulder", "pain in shoulder", "going to lift your", "lifting your", "going to raise your arm"], "start_instruction", -0.5, 1.0),
     StepAnchor("step_18_Collapsing_Pulse", ["no collapsing pulse"], "end_finding", 0.5),
     StepAnchor("step_19_Inspect_Face", ["take off your specs", "pull down on your eyelid", "check your eyes"], "start_instruction", 2.5),
     StepAnchor("step_19_Inspect_Face", ["open your mouth", "raise your tongue", "lift up your tongue"], "start_instruction", 0.0),
@@ -202,8 +220,7 @@ STEP_ANCHORS: List[StepAnchor] = [
     StepAnchor("step_20_3_Abdominojugular_Reflux", ["hepatojugular", "abdominojugular"], "end_finding", 13.0),
     StepAnchor("step_23_1_Palpate_Apex_Location", ["feel for your heartbeat", "hand on your chest", "placing my hand on your chest"], "start_instruction", 0.0),
     StepAnchor("step_27_1_Explain_Auscultation_Steps",
-               ["listen to your heart", "listening to your heart", "listen to your chest",
-                "listening to your chest", "to your heart", "listen to the heart"], "start_instruction", 0.0),
+               ["listen to your heart", "listening to your heart", "listen to the heart"], "start_instruction", 0.0),
     StepAnchor("step_30_1_Turn_Left_Lateral", ["turn to your left", "turn to the left"], "start_instruction", -0.5, 1.0),
     StepAnchor("step_30_4_Auscultate_Breathing_Maneuver", ["deep breath in", "breathe in, breathe out", "hold your breath"], "start_instruction", 0.0),
     StepAnchor("step_31_1_Turn_Back_Supine", ["turn back", "back on your back"], "start_instruction", -0.5, 1.0),

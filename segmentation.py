@@ -128,6 +128,19 @@ DEFAULT_DURATION_FALLBACK = (0.001, 0.25)  # used for steps missing from the ref
 # simply tune this value up; the mapping itself is what's wrong.
 # NB: IoU alone mildly *preferred* the zone signal. Judge it on F1/edit.
 DEFAULT_ZONE_WEIGHT = 0.0
+# How many transcript utterances one anchor phrase may match. >1 lets the
+# decoder, rather than an argmax outside it, resolve verbatim-repeated
+# instructions (see match_anchors_to_transcript); 3 covers the worst real case
+# measured, step_30_4's breathing instruction recurring 3x in both takes.
+# DEFAULTS TO 1 (= the original argmax behaviour) because the change is NOT
+# yet justified by evidence: in a local ablation over both takes at
+# sigma 0.5/1/2/4 it was a wash (mean F1@50 16.9 vs 16.3 and 11.2 vs 10.6 at
+# sigma 1/2, slightly worse at 0.5/4). That ablation substitutes literal
+# substring matching for MiniLM, so every candidate scores 1.0 and weaker
+# repeats are NOT attenuated the way real cosine similarity attenuates them --
+# it therefore understates this option's value and cannot settle it. Testing
+# 3 against the real embedder on Colab is the open item.
+DEFAULT_MAX_ANCHOR_CANDIDATES = 1
 
 NEG_INF = -1e18
 
@@ -247,13 +260,39 @@ class AnchorMatch:
 def load_step_anchors(anchor_embeddings_path: str, anchor_index_path: str) -> Tuple[np.ndarray, List[dict]]:
     """Loads phase0's cached anchor_embeddings.npy/anchor_index.json and
     filters both to type=='step' rows, keeping them aligned (the cache
-    interleaves umbrella and step rows in build_anchor_index()'s order)."""
+    interleaves umbrella and step rows in build_anchor_index()'s order).
+
+    Refuses a cache whose phrases no longer match phase0.STEP_ANCHORS. The
+    cache is written by phase0.embed_anchors(), which re-embeds on a phrase
+    change -- but this function reads the files directly, so without this
+    check an edit to STEP_ANCHORS would be silently ignored in favour of
+    whatever phrases the take's cached .npy/.json were built from. Vectors
+    and index stay internally consistent in that case, so nothing crashes
+    and nothing looks wrong; the run just quietly uses the old anchors.
+    Re-run phase0 for the take to rebuild both files."""
     vectors = np.load(anchor_embeddings_path)
     with open(anchor_index_path, encoding="utf-8") as f:
         index = json.load(f)
+    if len(index) != len(vectors):
+        raise ValueError(
+            f"Anchor cache is inconsistent: {anchor_index_path} has {len(index)} rows but "
+            f"{anchor_embeddings_path} has {len(vectors)} vectors. Re-run phase0 for this take.")
+
     mask = np.array([r["type"] == "step" for r in index])
     step_vectors = vectors[mask]
     step_index = [r for r, m in zip(index, mask) if m]
+
+    expected = [ph for sa in phase0.STEP_ANCHORS for ph in sa.phrases]
+    cached = [r["phrase"] for r in step_index]
+    if cached != expected:
+        missing = [p for p in expected if p not in cached]
+        stale = [p for p in cached if p not in expected]
+        raise ValueError(
+            f"Anchor cache is stale: {anchor_index_path} holds {len(cached)} step phrases but "
+            f"phase0.STEP_ANCHORS now defines {len(expected)}. "
+            f"Missing from cache: {missing[:5]}. No longer defined: {stale[:5]}. "
+            f"Re-run phase0 for this take to re-embed, then re-run segmentation.")
+
     return step_vectors, step_index
 
 
@@ -263,13 +302,27 @@ def match_anchors_to_transcript(
     utterances: List[Utterance],
     embed_backend: phase0.EmbedBackend,
     sim_floor: float = phase0.PIPELINE_CONFIG["anchor_sim_low"],
+    max_candidates: int = DEFAULT_MAX_ANCHOR_CANDIDATES,
 ) -> List[AnchorMatch]:
-    """For each step-anchor phrase, finds its best-matching transcript
-    utterance by cosine similarity and, if above sim_floor, emits an
-    AnchorMatch at utterance_start + lead_lag_sec. No speaker filtering --
+    """For each step-anchor phrase, emits an AnchorMatch at
+    utterance_start + lead_lag_sec for EVERY transcript utterance scoring
+    above sim_floor, up to the `max_candidates` best. No speaker filtering --
     patient one-word replies score far below sim_floor against clinical
     phrases naturally, and no per-take 'who is the doctor' field exists in
-    config.py to filter on generically."""
+    config.py to filter on generically.
+
+    Emitting all candidates rather than only the argmax is deliberate
+    (2026-09-08). Clinicians repeat instructions verbatim -- "are you
+    comfortable?" is asked twice in Take 3, ~319s apart, and the breathing
+    instruction for step_30_4 recurs three times in both takes -- so an
+    argmax commits to one reading OUTSIDE the decoder, with no ordering or
+    duration information to make that choice with, and was measured picking
+    the wrong occurrence. Every candidate instead becomes its own Gaussian
+    bump (build_emission_matrix sums them) and the transition/duration
+    constraints select the globally consistent one, which is what a
+    constraint-aware decoder is for. Weaker candidates self-attenuate:
+    `strength` is proportional to the cosine similarity, so a marginal
+    match contributes a correspondingly smaller bump."""
     if not utterances:
         return []
     utter_vectors = embed_backend.embed([u.text for u in utterances])
@@ -277,16 +330,19 @@ def match_anchors_to_transcript(
 
     matches: List[AnchorMatch] = []
     for a_idx, rec in enumerate(anchor_index):
-        u_idx = int(np.argmax(sims[a_idx]))
-        sim = float(sims[a_idx, u_idx])
-        if sim < sim_floor:
+        row = sims[a_idx]
+        above = np.flatnonzero(row >= sim_floor)
+        if above.size == 0:
             continue
-        adjusted_time = utterances[u_idx].start_sec + rec["lead_lag_sec"]
-        matches.append(AnchorMatch(
-            step=rec["step"], role=rec["role"],
-            time_sec=max(0.0, adjusted_time),
-            strength=sim * rec["confidence"],
-        ))
+        # best-scoring candidates first, capped
+        above = above[np.argsort(-row[above])][:max(1, max_candidates)]
+        for u_idx in above:
+            adjusted_time = utterances[int(u_idx)].start_sec + rec["lead_lag_sec"]
+            matches.append(AnchorMatch(
+                step=rec["step"], role=rec["role"],
+                time_sec=max(0.0, adjusted_time),
+                strength=float(row[u_idx]) * rec["confidence"],
+            ))
     return matches
 
 
@@ -922,6 +978,7 @@ def run_segmentation(
     shrink: float = DEFAULT_DURATION_SHRINK,
     grow: float = DEFAULT_DURATION_GROW,
     zone_weight: float = DEFAULT_ZONE_WEIGHT,
+    max_anchor_candidates: int = DEFAULT_MAX_ANCHOR_CANDIDATES,
     evaluate: bool = True,
 ) -> Tuple[List[Segment], Optional[dict]]:
     """Decodes step boundaries for `take_id` from its transcript + wide
@@ -948,8 +1005,11 @@ def run_segmentation(
 
     backend = phase0.EmbedBackend(embed_backend, logger=logger)
     anchor_vectors, anchor_index = load_step_anchors(paths["anchor_embeddings"], paths["anchor_index"])
-    matches = match_anchors_to_transcript(anchor_vectors, anchor_index, utterances, backend)
-    logger.info(f"  {len(matches)}/{len(anchor_index)} step-anchor phrases matched above sim floor")
+    matches = match_anchors_to_transcript(anchor_vectors, anchor_index, utterances, backend,
+                                         max_candidates=max_anchor_candidates)
+    n_phrases_hit = len({(m.step, m.role) for m in matches})
+    logger.info(f"  {len(matches)} anchor matches from {len(anchor_index)} phrases "
+                f"(<={max_anchor_candidates} candidates each, {n_phrases_hit} distinct step/role pairs hit)")
 
     raw_emission = build_emission_matrix(meta_states, matches, total_frames, sigma_sec=sigma_sec)
     if zone_weight:
