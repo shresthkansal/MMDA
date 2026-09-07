@@ -128,18 +128,20 @@ DEFAULT_DURATION_FALLBACK = (0.001, 0.25)  # used for steps missing from the ref
 # simply tune this value up; the mapping itself is what's wrong.
 # NB: IoU alone mildly *preferred* the zone signal. Judge it on F1/edit.
 DEFAULT_ZONE_WEIGHT = 0.0
-# How many transcript utterances one anchor phrase may match. >1 lets the
+# How many transcript utterances one anchor phrase may match. >1 would let the
 # decoder, rather than an argmax outside it, resolve verbatim-repeated
-# instructions (see match_anchors_to_transcript); 3 covers the worst real case
-# measured, step_30_4's breathing instruction recurring 3x in both takes.
-# DEFAULTS TO 1 (= the original argmax behaviour) because the change is NOT
-# yet justified by evidence: in a local ablation over both takes at
-# sigma 0.5/1/2/4 it was a wash (mean F1@50 16.9 vs 16.3 and 11.2 vs 10.6 at
-# sigma 1/2, slightly worse at 0.5/4). That ablation substitutes literal
-# substring matching for MiniLM, so every candidate scores 1.0 and weaker
-# repeats are NOT attenuated the way real cosine similarity attenuates them --
-# it therefore understates this option's value and cannot settle it. Testing
-# 3 against the real embedder on Colab is the open item.
+# instructions (see match_anchors_to_transcript) -- "are you comfortable?" is
+# asked twice in Take 3, 319s apart, and step_30_4's breathing instruction
+# recurs 3x in both takes.
+# TESTED AND REJECTED against the real MiniLM embedder on Colab (2026-09-08).
+# Raising it to 3 is clearly worse on BOTH takes, on every metric:
+#     Take 3  IoU 0.243 -> 0.176   F1@50 15.7 -> 9.3   frameAcc 48.5 -> 39.3
+#     Take 2  IoU 0.195 -> 0.159   F1@50  6.5 -> 6.1   frameAcc 39.6 -> 33.3
+# and segment counts balloon (59 -> 75, 46 -> 56), i.e. it over-segments --
+# the exact failure mode F1/edit were adopted to catch. The extra candidates
+# add bumps at genuinely wrong times faster than the decoder's constraints can
+# suppress them. The knob is kept only so this is not re-attempted blind; do
+# not raise it without a way to attenuate low-similarity candidates first.
 DEFAULT_MAX_ANCHOR_CANDIDATES = 1
 
 NEG_INF = -1e18
